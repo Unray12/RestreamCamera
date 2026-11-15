@@ -1,0 +1,44 @@
+# ---- runtime state / secrets -------------------------------------------
+# SQLite database, master key, backups created by docker compose.
+deploy/data/
+deploy/backups/
+.env
+.env.*
+!**/.env.example
+*.db
+*.db-shm
+*.db-wal
+*.key
+
+# ---- Go / build output -------------------------------------------------
+backend/restreamd
+backend/restreamd.exe
+backend/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# ---- editors / IDEs ----------------------------------------------------
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+.project
+.settings/
+
+# ---- OS ----------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- logs / temp -------------------------------------------------------
+*.log
+tmp/
+temp/

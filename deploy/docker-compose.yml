@@ -1,0 +1,71 @@
+name: restreamcamera
+
+# Production layout: both containers share the host network so that
+# RTSP/UDP, SRT, HLS and WebRTC work without publishing every ephemeral port.
+#
+#   cd deploy && cp .env.example .env && docker compose up -d --build
+#
+# Reachable after start:
+#   http://<host>:8080        UI + API
+#   rtsp://<host>:8554/<slug> virtual cameras
+#   http://<host>:8888/<slug>/index.m3u8  HLS
+#   http://<host>:8889/<slug>            WHEP (WebRTC)
+#   srt://<host>:8890?streamid=...       SRT
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.3
+    container_name: rc-mediamtx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  api:
+    build:
+      context: ../backend
+      args:
+        VERSION: ${RC_VERSION:-dev}
+    image: restreamcamera/api:${RC_VERSION:-dev}
+    container_name: rc-api
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - mediamtx
+    environment:
+      RC_LISTEN: 0.0.0.0:8080
+      # Control API and RTSP live on localhost because of host networking.
+      RC_MEDIA_API: http://127.0.0.1:9997
+      RC_MEDIA_METRICS: http://127.0.0.1:9998
+      RC_MEDIA_RTSP_BASE: rtsp://127.0.0.1:8554
+      RC_MEDIA_RTSP_LOOPBACK: rtsp://127.0.0.1:8554
+      # Addresses handed out to clients (VMS, ffplay, browsers).
+      RC_PUBLIC_RTSP: ${RC_PUBLIC_HOST:-localhost}:8554
+      RC_PUBLIC_HLS: http://${RC_PUBLIC_HOST:-localhost}:8888
+      RC_PUBLIC_WEBRTC: http://${RC_PUBLIC_HOST:-localhost}:8889
+      RC_ADMIN_USER: ${RC_ADMIN_USER:-admin}
+      RC_ADMIN_PASSWORD: ${RC_ADMIN_PASSWORD:-admin}
+      RC_MASTER_KEY: ${RC_MASTER_KEY:-}
+      RC_LOG_LEVEL: ${RC_LOG_LEVEL:-info}
+      RC_RECONCILE_INTERVAL: ${RC_RECONCILE_INTERVAL:-5s}
+    volumes:
+      # SQLite database + master key. On Linux hosts run:
+      #   sudo mkdir -p data && sudo chown -R 10001:10001 data
+      - ./data:/data
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/restreamd", "healthcheck"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

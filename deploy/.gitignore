@@ -1,0 +1,4 @@
+# Runtime state created by `docker compose up`; never commit.
+data/
+backups/
+.env

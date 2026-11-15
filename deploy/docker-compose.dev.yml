@@ -1,0 +1,84 @@
+name: restreamcamera-dev
+
+# Development / demo layout on a bridge network.
+#
+#   cd deploy && docker compose -f docker-compose.dev.yml up -d --build
+#
+# Every published port can be remapped when something else already uses it:
+#   RC_DEV_HTTP_PORT=18080 RC_DEV_RTSP_PORT=18554 \
+#   RC_DEV_HLS_PORT=18888 RC_DEV_WEBRTC_PORT=18889 \
+#   RC_DEV_WEBRTC_UDP=18189 RC_DEV_SRT_PORT=18890 \
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Differences from the production file:
+#   * RTSP runs over TCP only (Docker Desktop does not forward the ephemeral
+#     UDP ports MediaMTX opens for each RTSP session).
+#   * WebRTC advertises 127.0.0.1, so previews work from a browser on the host.
+#   * Only the ports a client needs are published.
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.3
+    container_name: rc-dev-mediamtx
+    restart: unless-stopped
+    volumes:
+      - ./mediamtx.dev.yml:/mediamtx.yml:ro
+    environment:
+      # Keep the WebRTC ICE port equal to the published port, otherwise the
+      # candidate MediaMTX hands to the browser is unreachable.
+      MTX_WEBRTCLOCALUDPADDRESS: ":${RC_DEV_WEBRTC_UDP:-8189}"
+    ports:
+      - "${RC_DEV_RTSP_PORT:-8554}:8554"                  # RTSP (TCP)
+      - "${RC_DEV_HLS_PORT:-8888}:8888"                   # HLS
+      - "${RC_DEV_WEBRTC_PORT:-8889}:8889"                # WebRTC / WHEP
+      - "${RC_DEV_WEBRTC_UDP:-8189}:${RC_DEV_WEBRTC_UDP:-8189}/udp"  # WebRTC media
+      - "${RC_DEV_SRT_PORT:-8890}:8890/udp"               # SRT
+      - "127.0.0.1:${RC_DEV_API_MEDIA_PORT:-9997}:9997"   # Control API, debugging only
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  api:
+    build:
+      context: ../backend
+      args:
+        VERSION: ${RC_VERSION:-dev}
+    image: restreamcamera/api:${RC_VERSION:-dev}
+    container_name: rc-dev-api
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    environment:
+      RC_LISTEN: 0.0.0.0:8080
+      RC_MEDIA_API: http://mediamtx:9997
+      RC_MEDIA_METRICS: http://mediamtx:9998
+      # Used by the API itself (load test, probes) when talking to MediaMTX.
+      RC_MEDIA_RTSP_BASE: rtsp://mediamtx:8554
+      # Used by MediaMTX to pull its own origin paths (stays inside its container).
+      RC_MEDIA_RTSP_LOOPBACK: rtsp://127.0.0.1:8554
+      # Addresses handed to clients running on the host.
+      RC_PUBLIC_RTSP: ${RC_PUBLIC_HOST:-localhost}:${RC_DEV_RTSP_PORT:-8554}
+      RC_PUBLIC_HLS: http://${RC_PUBLIC_HOST:-localhost}:${RC_DEV_HLS_PORT:-8888}
+      RC_PUBLIC_WEBRTC: http://${RC_PUBLIC_HOST:-localhost}:${RC_DEV_WEBRTC_PORT:-8889}
+      RC_ADMIN_USER: ${RC_ADMIN_USER:-admin}
+      RC_ADMIN_PASSWORD: ${RC_ADMIN_PASSWORD:-admin}
+      RC_MASTER_KEY: ${RC_MASTER_KEY:-}
+      RC_LOG_LEVEL: ${RC_LOG_LEVEL:-debug}
+    ports:
+      - "${RC_DEV_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./data:/data
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/restreamd", "healthcheck"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

@@ -1,0 +1,94 @@
+###############################################
+# RestreamCamera — MediaMTX (production, host networking)
+#
+# Paths are NOT declared here: the control plane creates them at runtime
+# through the API and re-creates them after a restart. Keep this file mounted
+# read-only.
+###############################################
+
+logLevel: info
+logDestinations: [stdout]
+
+readTimeout: 10s
+writeTimeout: 10s
+# Large queue: hundreds of readers on the same virtual camera.
+writeQueueSize: 2048
+udpMaxPayloadSize: 1452
+
+###############################################
+# Control API + metrics (localhost only, host network)
+
+api: true
+apiAddress: 127.0.0.1:9997
+
+metrics: true
+metricsAddress: 127.0.0.1:9998
+
+pprof: false
+playback: false
+
+###############################################
+# RTSP
+
+rtsp: true
+rtspAddress: :8554
+# UDP keeps VMS compatibility; TCP stays available for clients behind NAT.
+rtspTransports: [udp, tcp]
+rtspAuthMethods: [basic]
+
+###############################################
+# RTMP / MoQ (not used by RestreamCamera, disabled to save resources)
+
+rtmp: false
+moq: false
+
+###############################################
+# HLS (browser preview, permissive CORS)
+
+hls: true
+hlsAddress: :8888
+hlsVariant: fmp4
+hlsSegmentCount: 5
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAlwaysRemux: false
+hlsAllowOrigins: ["*"]
+
+###############################################
+# WebRTC / WHEP
+
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: true
+# Add a hostname here if the server sits behind NAT, e.g. ["cam.example.lan"].
+webrtcAdditionalHosts: []
+
+###############################################
+# SRT (ingest/egress)
+
+srt: true
+srtAddress: :8890
+
+###############################################
+# Authentication: every read/publish is decided by the control plane.
+
+authMethod: http
+authHTTPAddress: http://127.0.0.1:8080/api/v1/mediamtx/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+
+# Used only when authMethod is internal, kept for localhost API access.
+authInternalUsers:
+  - user: any
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+
+paths: {}

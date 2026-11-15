@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RestreamCamera</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="loginForm" class="login-card">
+      <div class="brand big"><span class="dot"></span> RestreamCamera</div>
+      <p class="muted">Nhân bản 1 camera thành hàng trăm luồng RTSP/HLS/WebRTC.</p>
+      <label>Username<input name="username" value="admin" autocomplete="username" /></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" autofocus /></label>
+      <button class="primary" type="submit">Đăng nhập</button>
+      <div id="loginError" class="error"></div>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="dot"></span> RestreamCamera</div>
+      <nav id="nav">
+        <a href="#dashboard" data-page="dashboard"><span>▦</span> Dashboard</a>
+        <a href="#sources" data-page="sources"><span>◉</span> Sources</a>
+        <a href="#cameras" data-page="cameras"><span>▤</span> Cameras</a>
+        <a href="#monitor" data-page="monitor"><span>◔</span> Monitor</a>
+        <a href="#loadtest" data-page="loadtest"><span>⚡</span> Load test</a>
+        <a href="#events" data-page="events"><span>≡</span> Events</a>
+        <a href="#system" data-page="system"><span>⚙</span> System</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div id="mediaBadge" class="badge">media: ?</div>
+        <div class="muted small" id="ver"></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <h1 id="pageTitle">Dashboard</h1>
+        <div class="topmetrics" id="topMetrics"></div>
+        <button id="logout" class="ghost" title="Đăng xuất">⎋</button>
+      </header>
+      <section id="view" class="view"></section>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toasts"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
