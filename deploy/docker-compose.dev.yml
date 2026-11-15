@@ -45,7 +45,7 @@ services:
       context: ../backend
       args:
         VERSION: ${RC_VERSION:-dev}
-    image: restreamcamera/api:${RC_VERSION:-dev}
+    image: restreamcamera-api:${RC_VERSION:-dev}
     container_name: rc-dev-api
     restart: unless-stopped
     depends_on:
