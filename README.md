@@ -49,6 +49,27 @@ docker compose ps
 
 Mở UI: `http://<host>:8080` (mặc định `admin` / mật khẩu trong `.env`).
 
+### Build & push image của riêng bạn
+
+Image do project build chỉ có **một**: `restreamcamera-api:<RC_VERSION>` (từ `backend/Dockerfile`). MediaMTX, golang, alpine đều là image kéo về.
+
+```bash
+cd deploy
+# tên image + tag lấy từ RC_IMAGE / RC_VERSION
+RC_IMAGE=<dockerhub-user>/restreamcamera-api RC_VERSION=1.0.0 \
+  docker compose -f docker-compose.yml build api
+RC_IMAGE=<dockerhub-user>/restreamcamera-api RC_VERSION=1.0.0 \
+  docker compose -f docker-compose.yml push api
+```
+
+Đặt `RC_IMAGE`/`RC_VERSION` trong `.env` thì không cần lặp lại biến. Máy khác chạy không cần source:
+
+```yaml
+services:
+  api:
+    image: <dockerhub-user>/restreamcamera-api:1.0.0
+```
+
 Các cổng cần mở trên host:
 
 | Cổng | Giao thức | Dùng cho |
@@ -157,6 +178,8 @@ Biến môi trường chính (xem đầy đủ trong `backend/internal/config/co
 | `RC_MASTER_KEY` | tự sinh | 32 byte base64, dùng để giải mã secret |
 | `RC_RECONCILE_INTERVAL` | `5s` | Chu kỳ đồng bộ path |
 | `RC_MAX_BULK_CAMERAS` | `500` | Giới hạn mỗi lần tạo hàng loạt |
+| `RC_IMAGE` | `restreamcamera-api` | Tên image build ra (`docker compose build/push api`) |
+| `RC_VERSION` | `dev` | Tag image + version nhúng trong binary |
 
 ## Kiểm thử
 

@@ -31,7 +31,7 @@ services:
       context: ../backend
       args:
         VERSION: ${RC_VERSION:-dev}
-    image: restreamcamera-api:${RC_VERSION:-dev}
+    image: ${RC_IMAGE:-restreamcamera-api}:${RC_VERSION:-dev}
     container_name: rc-api
     restart: unless-stopped
     network_mode: host
