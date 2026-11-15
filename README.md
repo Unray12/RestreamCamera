@@ -51,23 +51,29 @@ Mở UI: `http://<host>:8080` (mặc định `admin` / mật khẩu trong `.env`
 
 ### Build & push image của riêng bạn
 
-Image do project build chỉ có **một**: `restreamcamera-api:<RC_VERSION>` (từ `backend/Dockerfile`). MediaMTX, golang, alpine đều là image kéo về.
+Image do project build chỉ có **một**: `${RC_IMAGE}:${RC_TAG}` (từ `backend/Dockerfile`). MediaMTX, golang, alpine đều là image kéo về.
+
+Dùng **một tag cố định** (`latest`) và push chồng lên mỗi lần release — không tạo tag theo từng version:
 
 ```bash
 cd deploy
-# tên image + tag lấy từ RC_IMAGE / RC_VERSION
-RC_IMAGE=<dockerhub-user>/restreamcamera-api RC_VERSION=1.0.0 \
-  docker compose -f docker-compose.yml build api
-RC_IMAGE=<dockerhub-user>/restreamcamera-api RC_VERSION=1.0.0 \
-  docker compose -f docker-compose.yml push api
+docker compose -f docker-compose.yml build api
+docker compose -f docker-compose.yml push api
 ```
 
-Đặt `RC_IMAGE`/`RC_VERSION` trong `.env` thì không cần lặp lại biến. Máy khác chạy không cần source:
+Đặt trong `.env` để không phải truyền biến mỗi lần:
+
+```bash
+RC_IMAGE=unray/restreamcamera-api
+RC_TAG=latest
+```
+
+`RC_VERSION` chỉ là version nhúng trong binary (`restreamd version`), không ảnh hưởng tag image. Máy khác chạy không cần source:
 
 ```yaml
 services:
   api:
-    image: <dockerhub-user>/restreamcamera-api:1.0.0
+    image: unray/restreamcamera-api:latest
 ```
 
 Các cổng cần mở trên host:
@@ -89,6 +95,58 @@ Thư mục `deploy/data` chứa SQLite + master key. Trên Linux host:
 ```bash
 sudo mkdir -p deploy/data && sudo chown -R 10001:10001 deploy/data
 ```
+
+## Quick start (deploy, pull image từ Docker Hub)
+
+Dùng khi deploy lên máy/VPS khác **không cần source code**, chỉ pull image đã build sẵn
+(`unray/restreamcamera-api`) về và chạy. File compose: `deploy/docker-compose.deploy.yml`.
+
+```bash
+# trên máy đích: chỉ cần Docker + file deploy/ (compose, mediamtx.yml, .env.example)
+cd deploy
+cp .env.example .env
+# sửa .env: bắt buộc RC_PUBLIC_HOST (IP LAN thật của máy, KHÔNG để localhost)
+#            và RC_ADMIN_PASSWORD; RC_IMAGE/RC_TAG đã có default, chỉ đổi nếu
+#            bạn push lên namespace Docker Hub khác.
+
+# Linux: thư mục data phải thuộc UID 10001 (user trong image, không phải root)
+sudo mkdir -p data && sudo chown -R 10001:10001 data
+
+docker compose -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.deploy.yml up -d
+docker compose -f docker-compose.deploy.yml ps
+```
+
+Mở UI: `http://<RC_PUBLIC_HOST>:8080` (đăng nhập bằng `RC_ADMIN_USER`/`RC_ADMIN_PASSWORD` trong `.env`).
+
+**Cập nhật bản mới** (tag `latest` bị push chồng ở mỗi release, không cần đổi `.env`):
+
+```bash
+cd deploy
+docker compose -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.deploy.yml up -d
+```
+
+**Vì sao web và link RTSP truy cập được từ mọi interface:**
+
+- Cả hai container chạy `network_mode: host` → không bị giới hạn bởi NAT/port-mapping của Docker.
+- `RC_LISTEN=0.0.0.0:8080` (đặt sẵn trong compose) → UI/API nghe trên **mọi** địa chỉ IP của máy, không chỉ `127.0.0.1`.
+- `mediamtx.yml` khai báo `rtspAddress: :8554`, `hlsAddress: :8888`, `webrtcAddress: :8889`, `srtAddress: :8890` (không ghi IP cụ thể) → MediaMTX cũng nghe trên mọi interface.
+- `RC_PUBLIC_HOST` trong `.env` là địa chỉ được **nhúng vào link** (`rtsp://...`, `http://...` cho HLS/WHEP) mà webapp trả về cho client — đây phải là IP LAN mà các máy khác (VMS, trình duyệt, ffplay) thực sự gõ vào để kết nối tới server, không phải `localhost`/`127.0.0.1`. Nếu máy có nhiều card mạng, chọn IP thuộc mạng mà client của bạn nằm trên đó; muốn phục vụ nhiều mạng cùng lúc, chạy thêm một `RC_PUBLIC_HOST` khác qua biến môi trường riêng hoặc dùng DNS/VIP trỏ về cùng máy.
+
+Bảng cổng cần mở trên host và lưu ý RTSP-over-UDP: xem mục "Quick start (production, host network)" ở trên — áp dụng y hệt cho cách deploy này.
+
+**Máy đã có sẵn một MediaMTX khác (hoặc một stack RestreamCamera khác) chạy ở cổng mặc định?**
+Vì `network_mode: host`, hai container không thể cùng bind một cổng — bỏ comment và đổi
+các biến `RC_HTTP_PORT` / `RC_RTSP_PORT` / `RC_HLS_PORT` / `RC_WEBRTC_PORT` /
+`RC_WEBRTC_UDP_PORT` / `RC_SRT_PORT` / `RC_MEDIA_API_PORT` / `RC_MEDIA_METRICS_PORT`
+trong `.env` (default = cổng chuẩn ở bảng trên) thành cổng còn trống. Không cần sửa
+`docker-compose*.yml` hay `mediamtx.yml` — cả hai file compose đã đọc các biến này và tự
+set lại `RC_LISTEN`, `RC_PUBLIC_*` cũng như override MediaMTX qua biến môi trường
+`MTX_*`. Mỗi stack chạy song song cần: bộ cổng riêng, thư mục `data` riêng (copy `deploy/`
+sang thư mục khác hoặc đổi `RC_DATA_DIR`/volume), và project name riêng
+(`docker compose -p <ten-khac> -f docker-compose.deploy.yml up -d`, vì mặc định cả
+hai file đều đặt `name: restreamcamera`).
 
 ## Quick start (dev, bridge network)
 
@@ -178,8 +236,9 @@ Biến môi trường chính (xem đầy đủ trong `backend/internal/config/co
 | `RC_MASTER_KEY` | tự sinh | 32 byte base64, dùng để giải mã secret |
 | `RC_RECONCILE_INTERVAL` | `5s` | Chu kỳ đồng bộ path |
 | `RC_MAX_BULK_CAMERAS` | `500` | Giới hạn mỗi lần tạo hàng loạt |
-| `RC_IMAGE` | `restreamcamera-api` | Tên image build ra (`docker compose build/push api`) |
-| `RC_VERSION` | `dev` | Tag image + version nhúng trong binary |
+| `RC_IMAGE` | `restreamcamera-api` (build) / `unray/restreamcamera-api` (deploy) | Tên image, build ra hoặc pull về |
+| `RC_TAG` | `latest` | Tag image Docker (push chồng mỗi lần release, không theo version) |
+| `RC_VERSION` | `dev` | Version nhúng trong binary (`restreamd version`), không ảnh hưởng tag image |
 
 ## Kiểm thử
 

@@ -11,6 +11,12 @@ name: restreamcamera
 #   http://<host>:8888/<slug>/index.m3u8  HLS
 #   http://<host>:8889/<slug>            WHEP (WebRTC)
 #   srt://<host>:8890?streamid=...       SRT
+#
+# Already running another MediaMTX/RestreamCamera on this host? Set the
+# RC_*_PORT variables in .env (see .env.example) to move every port — no
+# edits to this file or mediamtx.yml needed. Each stack needs its own .env
+# and ports (and its own `-p <name>` / COMPOSE_PROJECT_NAME if run side by
+# side, since the default project name "restreamcamera" is shared).
 
 services:
   mediamtx:
@@ -18,6 +24,15 @@ services:
     container_name: rc-mediamtx
     restart: unless-stopped
     network_mode: host
+    environment:
+      MTX_APIADDRESS: 127.0.0.1:${RC_MEDIA_API_PORT:-9997}
+      MTX_METRICSADDRESS: 127.0.0.1:${RC_MEDIA_METRICS_PORT:-9998}
+      MTX_RTSPADDRESS: :${RC_RTSP_PORT:-8554}
+      MTX_HLSADDRESS: :${RC_HLS_PORT:-8888}
+      MTX_WEBRTCADDRESS: :${RC_WEBRTC_PORT:-8889}
+      MTX_WEBRTCLOCALUDPADDRESS: :${RC_WEBRTC_UDP_PORT:-8189}
+      MTX_SRTADDRESS: :${RC_SRT_PORT:-8890}
+      MTX_AUTHHTTPADDRESS: http://127.0.0.1:${RC_HTTP_PORT:-8080}/api/v1/mediamtx/auth
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     logging:
@@ -31,23 +46,23 @@ services:
       context: ../backend
       args:
         VERSION: ${RC_VERSION:-dev}
-    image: ${RC_IMAGE:-restreamcamera-api}:${RC_VERSION:-dev}
+    image: ${RC_IMAGE:-restreamcamera-api}:${RC_TAG:-latest}
     container_name: rc-api
     restart: unless-stopped
     network_mode: host
     depends_on:
       - mediamtx
     environment:
-      RC_LISTEN: 0.0.0.0:8080
+      RC_LISTEN: 0.0.0.0:${RC_HTTP_PORT:-8080}
       # Control API and RTSP live on localhost because of host networking.
-      RC_MEDIA_API: http://127.0.0.1:9997
-      RC_MEDIA_METRICS: http://127.0.0.1:9998
-      RC_MEDIA_RTSP_BASE: rtsp://127.0.0.1:8554
-      RC_MEDIA_RTSP_LOOPBACK: rtsp://127.0.0.1:8554
+      RC_MEDIA_API: http://127.0.0.1:${RC_MEDIA_API_PORT:-9997}
+      RC_MEDIA_METRICS: http://127.0.0.1:${RC_MEDIA_METRICS_PORT:-9998}
+      RC_MEDIA_RTSP_BASE: rtsp://127.0.0.1:${RC_RTSP_PORT:-8554}
+      RC_MEDIA_RTSP_LOOPBACK: rtsp://127.0.0.1:${RC_RTSP_PORT:-8554}
       # Addresses handed out to clients (VMS, ffplay, browsers).
-      RC_PUBLIC_RTSP: ${RC_PUBLIC_HOST:-localhost}:8554
-      RC_PUBLIC_HLS: http://${RC_PUBLIC_HOST:-localhost}:8888
-      RC_PUBLIC_WEBRTC: http://${RC_PUBLIC_HOST:-localhost}:8889
+      RC_PUBLIC_RTSP: ${RC_PUBLIC_HOST:-localhost}:${RC_RTSP_PORT:-8554}
+      RC_PUBLIC_HLS: http://${RC_PUBLIC_HOST:-localhost}:${RC_HLS_PORT:-8888}
+      RC_PUBLIC_WEBRTC: http://${RC_PUBLIC_HOST:-localhost}:${RC_WEBRTC_PORT:-8889}
       RC_ADMIN_USER: ${RC_ADMIN_USER:-admin}
       RC_ADMIN_PASSWORD: ${RC_ADMIN_PASSWORD:-admin}
       RC_MASTER_KEY: ${RC_MASTER_KEY:-}

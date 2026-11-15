@@ -1,0 +1,99 @@
+name: restreamcamera
+
+# DEPLOY BẰNG IMAGE ĐÃ PUSH LÊN DOCKER HUB — không cần source code, không build.
+#
+#   cd deploy
+#   cp .env.example .env          # bắt buộc: RC_PUBLIC_HOST + RC_ADMIN_PASSWORD
+#   # Linux: sudo mkdir -p data && sudo chown -R 10001:10001 data
+#   docker compose -f docker-compose.deploy.yml up -d
+#
+# Cập nhật bản mới từ Docker Hub (tag latest bị push chồng):
+#   docker compose -f docker-compose.deploy.yml pull
+#   docker compose -f docker-compose.deploy.yml up -d
+#
+# Cổng (network_mode: host → listen trên MỌI interface của máy):
+#   8080/tcp        UI + REST API         (RC_HTTP_PORT)
+#   8554/tcp + udp  RTSP (tcp = điều khiển; udp = data, dải ephemeral 32768-60999)
+#                                         (RC_RTSP_PORT)
+#   8888/tcp        HLS                   (RC_HLS_PORT)
+#   8889/tcp        WebRTC/WHEP           (RC_WEBRTC_PORT)
+#   8189/udp        WebRTC media          (RC_WEBRTC_UDP_PORT)
+#   8890/udp        SRT                   (RC_SRT_PORT)
+#   9997, 9998/tcp  Control API + metrics — CHỈ bind 127.0.0.1, không lộ ra ngoài
+#                                         (RC_MEDIA_API_PORT, RC_MEDIA_METRICS_PORT)
+#
+# Máy đã có một MediaMTX/RestreamCamera khác chạy ở cổng mặc định? Đặt toàn bộ
+# biến RC_*_PORT ở trên trong .env (xem .env.example) để đổi cổng — không cần
+# sửa file compose hay mediamtx.yml. Mỗi stack cần một bộ cổng + .env riêng
+# (project name mặc định cũng là "restreamcamera", đổi bằng `-p <ten-khac>`
+# hoặc biến COMPOSE_PROJECT_NAME nếu chạy nhiều stack trên cùng máy).
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.3
+    container_name: rc-mediamtx
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MTX_APIADDRESS: 127.0.0.1:${RC_MEDIA_API_PORT:-9997}
+      MTX_METRICSADDRESS: 127.0.0.1:${RC_MEDIA_METRICS_PORT:-9998}
+      MTX_RTSPADDRESS: :${RC_RTSP_PORT:-8554}
+      MTX_HLSADDRESS: :${RC_HLS_PORT:-8888}
+      MTX_WEBRTCADDRESS: :${RC_WEBRTC_PORT:-8889}
+      MTX_WEBRTCLOCALUDPADDRESS: :${RC_WEBRTC_UDP_PORT:-8189}
+      MTX_SRTADDRESS: :${RC_SRT_PORT:-8890}
+      # Control plane nghe ở cổng RC_HTTP_PORT, MediaMTX gọi callback auth vào đó.
+      MTX_AUTHHTTPADDRESS: http://127.0.0.1:${RC_HTTP_PORT:-8080}/api/v1/mediamtx/auth
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  api:
+    # Chỉ pull, không build. RC_IMAGE/RC_TAG lấy từ .env.
+    image: ${RC_IMAGE:-unray/restreamcamera-api}:${RC_TAG:-latest}
+    container_name: rc-api
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - mediamtx
+    environment:
+      # 0.0.0.0 = nghe trên mọi interface (không chỉ 127.0.0.1) → web mở từ LAN.
+      RC_LISTEN: 0.0.0.0:${RC_HTTP_PORT:-8080}
+      # Control API và RTSP nội bộ đi qua loopback vì dùng host network.
+      RC_MEDIA_API: http://127.0.0.1:${RC_MEDIA_API_PORT:-9997}
+      RC_MEDIA_METRICS: http://127.0.0.1:${RC_MEDIA_METRICS_PORT:-9998}
+      RC_MEDIA_RTSP_BASE: rtsp://127.0.0.1:${RC_RTSP_PORT:-8554}
+      RC_MEDIA_RTSP_LOOPBACK: rtsp://127.0.0.1:${RC_RTSP_PORT:-8554}
+      # Host:port dùng trong URL trả về cho client (VMS, ffplay, browser).
+      # PHẢI là IP LAN thật (VD 192.168.1.10), KHÔNG để localhost nếu client
+      # ở máy khác — nếu không link RTSP/HLS trong webapp sẽ không kết nối được.
+      RC_PUBLIC_RTSP: ${RC_PUBLIC_HOST:-localhost}:${RC_RTSP_PORT:-8554}
+      RC_PUBLIC_HLS: http://${RC_PUBLIC_HOST:-localhost}:${RC_HLS_PORT:-8888}
+      RC_PUBLIC_WEBRTC: http://${RC_PUBLIC_HOST:-localhost}:${RC_WEBRTC_PORT:-8889}
+      RC_ADMIN_USER: ${RC_ADMIN_USER:-admin}
+      RC_ADMIN_PASSWORD: ${RC_ADMIN_PASSWORD:-admin}
+      # Giữ nguyên giữa các lần restart/backup/restore, nếu mất thì secret
+      # mã hoá trong SQLite không giải được nữa.
+      RC_MASTER_KEY: ${RC_MASTER_KEY:-}
+      RC_LOG_LEVEL: ${RC_LOG_LEVEL:-info}
+      RC_RECONCILE_INTERVAL: ${RC_RECONCILE_INTERVAL:-5s}
+    volumes:
+      # SQLite database + master key. Trên Linux host:
+      #   sudo mkdir -p data && sudo chown -R 10001:10001 data
+      - ./data:/data
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/restreamd", "healthcheck"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

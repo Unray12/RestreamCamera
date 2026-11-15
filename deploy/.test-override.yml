@@ -1,0 +1,17 @@
+# TEMPORARY — used only to verify docker-compose.deploy.yml on this machine.
+# Ports 8080/8888/8889/8189 are already taken by another project (nova-e2e),
+# so this override remaps them. Everything else (host network, 0.0.0.0 bind,
+# RC_PUBLIC_RTSP) is identical to the real deploy file.
+services:
+  mediamtx:
+    environment:
+      MTX_HLSADDRESS: ":18881"
+      MTX_WEBRTCADDRESS: ":18891"
+      MTX_WEBRTCLOCALUDPADDRESS: ":18191"
+      MTX_AUTHHTTPADDRESS: http://127.0.0.1:18080/api/v1/mediamtx/auth
+
+  api:
+    environment:
+      RC_LISTEN: 0.0.0.0:18080
+      RC_PUBLIC_HLS: http://${RC_PUBLIC_HOST:-localhost}:18881
+      RC_PUBLIC_WEBRTC: http://${RC_PUBLIC_HOST:-localhost}:18891
