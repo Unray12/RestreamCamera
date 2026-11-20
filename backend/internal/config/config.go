@@ -41,6 +41,7 @@ type Config struct {
 
 	ReconcileInterval time.Duration
 	SampleInterval    time.Duration
+	TelemetryInterval time.Duration // real-time bandwidth sampling
 	EventRetention    time.Duration
 }
 
@@ -98,6 +99,7 @@ func Load(version string) (*Config, error) {
 
 		ReconcileInterval: envDuration("RC_RECONCILE_INTERVAL", 5*time.Second),
 		SampleInterval:    envDuration("RC_SAMPLE_INTERVAL", time.Minute),
+		TelemetryInterval: envDuration("RC_TELEMETRY_INTERVAL", time.Second),
 		EventRetention:    envDuration("RC_EVENT_RETENTION", 7*24*time.Hour),
 	}
 

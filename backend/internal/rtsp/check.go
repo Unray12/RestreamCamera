@@ -136,7 +136,7 @@ func describeFlow(ctx context.Context, host, uri, user, pass string, deadline ti
 	if err != nil || rep.status != 401 || user == "" {
 		return rep, err
 	}
-	auth := authorization(rep.challenges, user, pass, uri)
+	auth := authorization(rep.challenges, user, pass, uri, "DESCRIBE")
 	if auth == "" {
 		return rep, nil
 	}
@@ -204,10 +204,10 @@ func (ss *session) describe(uri, auth string, cseq int) (describeReply, error) {
 }
 
 // authorization answers the first usable challenge: Digest (preferred) or Basic.
-func authorization(challenges []string, user, pass, uri string) string {
+func authorization(challenges []string, user, pass, uri, method string) string {
 	for _, c := range challenges {
 		if strings.HasPrefix(strings.ToLower(c), "digest ") {
-			if h := digestHeader(c[len("digest "):], user, pass, uri); h != "" {
+			if h := digestHeader(c[len("digest "):], user, pass, uri, method); h != "" {
 				return h
 			}
 		}
@@ -221,7 +221,7 @@ func authorization(challenges []string, user, pass, uri string) string {
 }
 
 // digestHeader builds an RFC 2617 MD5 Digest answer (with or without qop=auth); "" when unsupported.
-func digestHeader(params, user, pass, uri string) string {
+func digestHeader(params, user, pass, uri, method string) string {
 	p := parseParams(params)
 	if alg := strings.ToUpper(p["algorithm"]); alg != "" && alg != "MD5" {
 		return ""
@@ -232,7 +232,7 @@ func digestHeader(params, user, pass, uri string) string {
 	}
 	md5hex := func(s string) string { h := md5.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
 	ha1 := md5hex(user + ":" + realm + ":" + pass)
-	ha2 := md5hex("DESCRIBE:" + uri)
+	ha2 := md5hex(method + ":" + uri)
 	var b strings.Builder
 	fmt.Fprintf(&b, `Digest username="%s", realm="%s", nonce="%s", uri="%s"`, user, realm, nonce, uri)
 	qop := ""
@@ -296,4 +296,31 @@ func SplitCredentials(raw string) (clean, user, pass string) {
 	pass, _ = u.User.Password()
 	u.User = nil
 	return u.String(), user, pass
+}
+
+// Ping measures the RTSP front door: TCP connect plus one OPTIONS round trip, in
+// milliseconds. It needs no credentials, pulls no media and starts no source.
+func Ping(ctx context.Context, addr string, timeout time.Duration) (float64, error) {
+	start := time.Now()
+	dctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var d net.Dialer
+	conn, err := d.DialContext(dctx, "tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(start.Add(timeout))
+	req := "OPTIONS * RTSP/1.0\r\n" + "CSeq: 1\r\n" + "User-Agent: RestreamCamera/1.0\r\n" + "\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		return 0, err
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return 0, err
+	}
+	if !strings.HasPrefix(line, "RTSP/") {
+		return 0, errors.New("not an RTSP server")
+	}
+	return float64(time.Since(start).Microseconds()) / 1000, nil
 }

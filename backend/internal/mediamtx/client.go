@@ -40,16 +40,48 @@ type PathConf struct {
 // Reader is one path reader (client).
 type Reader struct {
 	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
+}
+
+// Track describes one media track of a path (codec + properties such as width/height).
+type Track struct {
+	Codec      string         `json:"codec"`
+	CodecProps map[string]any `json:"codecProps,omitempty"`
 }
 
 // PathState is the subset of the runtime path state we consume.
 type PathState struct {
-	Name          string   `json:"name"`
-	Ready         bool     `json:"ready"`
-	Available     bool     `json:"available"`
-	Readers       []Reader `json:"readers"`
-	InboundBytes  uint64   `json:"inboundBytes"`
-	OutboundBytes uint64   `json:"outboundBytes"`
+	Name                 string    `json:"name"`
+	Ready                bool      `json:"ready"`
+	ReadyTime            time.Time `json:"readyTime"`
+	Available            bool      `json:"available"`
+	Source               *Reader   `json:"source,omitempty"`
+	Tracks2              []Track   `json:"tracks2,omitempty"`
+	Readers              []Reader  `json:"readers"`
+	InboundBytes         uint64    `json:"inboundBytes"`
+	OutboundBytes        uint64    `json:"outboundBytes"`
+	InboundFramesInError uint64    `json:"inboundFramesInError"`
+}
+
+// RTSPSession is one RTSP client/publisher session with its transport counters.
+type RTSPSession struct {
+	ID         string    `json:"id"`
+	Created    time.Time `json:"created"`
+	RemoteAddr string    `json:"remoteAddr"`
+	State      string    `json:"state"` // idle | read | publish
+	Path       string    `json:"path"`
+	UserAgent  string    `json:"userAgent"`
+	Transport  string    `json:"transport"`
+
+	InboundBytes            uint64  `json:"inboundBytes"`
+	InboundRTPPackets       uint64  `json:"inboundRTPPackets"`
+	InboundRTPPacketsLost   uint64  `json:"inboundRTPPacketsLost"`
+	InboundRTPPacketsJitter float64 `json:"inboundRTPPacketsJitter"`
+
+	OutboundBytes                  uint64 `json:"outboundBytes"`
+	OutboundRTPPackets             uint64 `json:"outboundRTPPackets"`
+	OutboundRTPPacketsReportedLost uint64 `json:"outboundRTPPacketsReportedLost"`
+	OutboundRTPPacketsDiscarded    uint64 `json:"outboundRTPPacketsDiscarded"`
 }
 
 // Info is the server information payload.
@@ -203,4 +235,22 @@ func (c *Client) GetPath(ctx context.Context, name string) (PathState, error) {
 	var out PathState
 	err := c.do(ctx, http.MethodGet, "/v3/paths/get/"+url.PathEscape(name), nil, &out)
 	return out, err
+}
+
+// ListRTSPSessions returns every RTSP session (readers and publishers).
+func (c *Client) ListRTSPSessions(ctx context.Context) ([]RTSPSession, error) {
+	out := make([]RTSPSession, 0, 256)
+	page := 0
+	for {
+		var pageOut listWrapper[RTSPSession]
+		p := fmt.Sprintf("/v3/rtspsessions/list?page=%d&itemsPerPage=2000", page)
+		if err := c.do(ctx, http.MethodGet, p, nil, &pageOut); err != nil {
+			return nil, err
+		}
+		out = append(out, pageOut.Items...)
+		page++
+		if page >= pageOut.PageCount || pageOut.PageCount == 0 {
+			return out, nil
+		}
+	}
 }

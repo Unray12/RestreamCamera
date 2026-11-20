@@ -21,6 +21,7 @@ import (
 	"github.com/aclab/restreamcamera/internal/mediamtx"
 	"github.com/aclab/restreamcamera/internal/provision"
 	"github.com/aclab/restreamcamera/internal/store"
+	"github.com/aclab/restreamcamera/internal/telemetry"
 )
 
 // version is injected at build time via -ldflags "-X main.version=..."
@@ -91,9 +92,31 @@ func serve() error {
 
 	go rec.Run(ctx)
 
+	tel := telemetry.New(mtx, log, telemetry.Options{
+		Interval:     cfg.TelemetryInterval,
+		CameraPrefix: cfg.CamerasPrefix,
+		SourcePrefix: cfg.SourcesPrefix,
+		RTSPAddr:     telemetry.RTSPHostPort(cfg.MediaRTSP),
+		Cameras: func(ctx context.Context) ([]string, error) {
+			cams, err := st.AllCamerasForReconcile(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]string, len(cams))
+			for i, c := range cams {
+				out[i] = c.Slug
+			}
+			return out, nil
+		},
+	})
+	go tel.Run(ctx)
+
+	apiSrv := api.New(cfg, st, mtx, box, rec, log)
+	apiSrv.SetTelemetry(tel)
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(cfg, st, mtx, box, rec, log).Handler(),
+		Handler:           apiSrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

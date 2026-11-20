@@ -14,6 +14,7 @@ import (
 	"github.com/aclab/restreamcamera/internal/mediamtx"
 	"github.com/aclab/restreamcamera/internal/provision"
 	"github.com/aclab/restreamcamera/internal/store"
+	"github.com/aclab/restreamcamera/internal/telemetry"
 	"github.com/aclab/restreamcamera/internal/webui"
 )
 
@@ -24,6 +25,7 @@ type Server struct {
 	mtx     *mediamtx.Client
 	box     *cryptobox.Box
 	rec     *provision.Reconciler
+	tel     *telemetry.Collector
 	log     *slog.Logger
 	runs    *runStore
 	started time.Time
@@ -61,6 +63,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system", s.handleSystem)
 	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
 	mux.HandleFunc("GET /api/v1/monitor/stream", s.handleMonitorStream)
+	mux.HandleFunc("GET /api/v1/monitor/overview", s.handleMonitorOverview)
+	mux.HandleFunc("GET /api/v1/monitor/series", s.handleMonitorSeries)
+	mux.HandleFunc("GET /api/v1/monitor/cameras", s.handleMonitorCameras)
+	mux.HandleFunc("GET /api/v1/monitor/cameras/{id}", s.handleMonitorCamera)
 
 	mux.HandleFunc("GET /api/v1/sources", s.handleListSources)
 	mux.HandleFunc("POST /api/v1/sources", s.handleCreateSource)
@@ -81,6 +87,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras/{id}/preview", s.handleCameraPreview)
 
 	mux.HandleFunc("POST /api/v1/loadtest", s.handleStartLoadtest)
+	mux.HandleFunc("GET /api/v1/loadtest", s.handleListLoadtests)
+	mux.HandleFunc("POST /api/v1/loadtest/{id}/stop", s.handleStopLoadtest)
 	mux.HandleFunc("GET /api/v1/loadtest/{id}", s.handleGetLoadtest)
 	mux.HandleFunc("GET /api/v1/metrics", s.handleMetrics)
 

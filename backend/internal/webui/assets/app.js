@@ -11,6 +11,9 @@ const state = {
   cam: { q: '', st: '', group: '', page: 1, pageSize: 25, total: 0, items: [], sel: new Set() },
   es: null,
   timer: null,
+  sseSpec: '',
+  dash: null,
+  lt: null,
 };
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -73,6 +76,7 @@ function logout() {
   localStorage.removeItem('rc_token');
   if (state.es) { state.es.close(); state.es = null; }
   if (state.timer) { clearInterval(state.timer); state.timer = null; }
+  dashStop();
   showLogin();
 }
 
@@ -136,21 +140,23 @@ async function loadOverview() {
   } catch (e) { /* offline */ }
 }
 
-function connectSSE() {
+function connectSSE(cams) {
+  if (cams !== undefined) state.sseSpec = cams;
   if (state.es) state.es.close();
-  const es = new EventSource('/api/v1/monitor/stream?token=' + encodeURIComponent(state.token));
+  const q = new URLSearchParams({ token: state.token });
+  if (state.sseSpec) q.set('cams', state.sseSpec);
+  const es = new EventSource('/api/v1/monitor/stream?' + q.toString());
   es.addEventListener('stats', (ev) => {
     try {
       const d = JSON.parse(ev.data);
       state.overview = d.overview;
       state.stats = d.stats;
       renderTopMetrics();
-      const r = $('#mon-readers'); if (r) r.textContent = fmt(d.stats.readers);
-      const o = $('#mon-out'); if (o) o.textContent = kbps(d.stats.outKbps);
-      const rd = $('#dash-readers'); if (rd) rd.textContent = fmt(d.stats.readers);
-      const ob = $('#dash-out'); if (ob) ob.textContent = kbps(d.stats.outKbps);
-      const rdy = $('#dash-ready'); if (rdy) rdy.textContent = fmt(d.overview.camerasReady);
+      if (typeof paintOverviewKpis === 'function' && state.dash) paintOverviewKpis();
     } catch { /* ignore */ }
+  });
+  es.addEventListener('live', (ev) => {
+    try { dashOnLive(JSON.parse(ev.data)); } catch { /* ignore */ }
   });
   state.es = es;
 }
@@ -163,15 +169,16 @@ window.addEventListener('hashchange', () => {
 async function navigate(page) {
   state.page = page;
   if (state.timer) { clearInterval(state.timer); state.timer = null; }
+  dashStop();
+  if (page === 'monitor') page = 'dashboard';
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === page));
-  const titles = { dashboard: 'Dashboard', sources: 'Sources', cameras: 'Virtual cameras', monitor: 'Monitor', loadtest: 'Load test', events: 'Events', system: 'System' };
+  const titles = { dashboard: 'Dashboard — băng thông thời gian thực', sources: 'Sources', cameras: 'Virtual cameras', loadtest: 'Load test', events: 'Events', system: 'System' };
   $('#pageTitle').textContent = titles[page] || page;
   $('#view').innerHTML = '<div class="panel"><div class="panel-body"><span class="spinner"></span> Đang tải…</div></div>';
   try {
     if (page === 'dashboard') await pageDashboard();
     else if (page === 'sources') await pageSources();
     else if (page === 'cameras') await pageCameras();
-    else if (page === 'monitor') await pageMonitor();
     else if (page === 'loadtest') await pageLoadtest();
     else if (page === 'events') await pageEvents();
     else if (page === 'system') await pageSystem();
@@ -181,94 +188,7 @@ async function navigate(page) {
   }
 }
 
-/* ------------------------------------------------------------------ dashboard */
-
-async function pageDashboard() {
-  const [ov, samples, events, cams] = await Promise.all([
-    api('/overview'),
-    api('/samples?limit=180'),
-    api('/events?limit=8'),
-    api('/cameras?pageSize=200&page=1'),
-  ]);
-  state.overview = ov.overview;
-  state.stats = ov.stats;
-  renderTopMetrics();
-  const top = cams.items
-    .filter((c) => c.runtime.readers > 0)
-    .sort((a, b) => b.runtime.readers - a.runtime.readers)
-    .slice(0, 8);
-  const o = ov.overview;
-  $('#view').innerHTML = `
-    <div class="cards">
-      <div class="card"><h3>Camera ảo</h3><div class="value">${fmt(o.camerasTotal)}</div><div class="sub">${fmt(o.camerasReady)} ready · ${fmt(o.camerasIdle || 0)} idle · ${fmt(o.camerasOffline)} offline</div></div>
-      <div class="card"><h3>Readers</h3><div class="value" id="dash-readers">${fmt(ov.stats.readers)}</div><div class="sub">client đang kết nối</div></div>
-      <div class="card"><h3>Egress</h3><div class="value" id="dash-out">${kbps(ov.stats.outKbps)}</div><div class="sub">ingest ${kbps(ov.stats.inKbps)}</div></div>
-      <div class="card"><h3>Sources</h3><div class="value">${fmt(o.sourcesTotal)}</div><div class="sub">${fmt(o.sourcesOnline)} online</div></div>
-    </div>
-
-    <div class="grid2">
-      <div class="panel">
-        <div class="panel-head"><h2>Readers theo thời gian</h2><span class="spacer"></span><span class="muted small">1 điểm / phút</span></div>
-        <div class="panel-body"><canvas id="spark" class="spark"></canvas></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Top cameras</h2></div>
-        <div class="panel-body">
-          ${top.length ? `<div class="tablewrap"><table><thead><tr><th>Slug</th><th class="num">Readers</th><th class="num">Egress</th><th>State</th></tr></thead><tbody>
-            ${top.map((c) => `<tr><td class="slug">${esc(c.slug)}</td><td class="num">${c.runtime.readers}</td><td class="num">${kbps(c.runtime.outKbps)}</td><td><span class="state ${esc(c.runtime.state)}">${esc(c.runtime.state)}</span></td></tr>`).join('')}
-          </tbody></table></div>` : '<div class="muted">Chưa có client nào. Tạo camera ảo rồi mở bằng ffplay/VLC.</div>'}
-        </div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head"><h2>Sự kiện gần đây</h2><span class="spacer"></span><a href="#events">Xem tất cả →</a></div>
-      <div class="panel-body">${eventsTable(events.items)}</div>
-    </div>`;
-  drawSpark(samples.items);
-}
-
-function drawSpark(samples) {
-  const cv = $('#spark');
-  if (!cv) return;
-  const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || 600;
-  const h = 120;
-  cv.width = w * dpr;
-  cv.height = h * dpr;
-  const ctx = cv.getContext('2d');
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
-  if (!samples.length) {
-    ctx.fillStyle = '#64748b';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('Chưa có dữ liệu (sample mỗi phút)', 12, h / 2);
-    return;
-  }
-  const vals = samples.map((s) => s.readers);
-  const max = Math.max(1, ...vals);
-  const stepX = w / Math.max(1, vals.length - 1);
-  ctx.beginPath();
-  vals.forEach((v, i) => {
-    const x = i * stepX;
-    const y = h - 10 - (v / max) * (h - 26);
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = '#38bdf8';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.lineTo(w, h);
-  ctx.lineTo(0, h);
-  ctx.closePath();
-  const g = ctx.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, 'rgba(56,189,248,.28)');
-  g.addColorStop(1, 'rgba(56,189,248,0)');
-  ctx.fillStyle = g;
-  ctx.fill();
-  ctx.fillStyle = '#8b9bb4';
-  ctx.font = '11px sans-serif';
-  ctx.fillText(`max ${max} readers`, 8, 14);
-}
+/* dashboard: see dash.js */
 
 function eventsTable(items) {
   if (!items || !items.length) return '<div class="muted">Chưa có sự kiện.</div>';
@@ -625,96 +545,6 @@ async function deleteCamera(id, slug) {
     await pageCameras();
     await loadOverview();
   } catch (err) { toast(err.message, 'err'); }
-}
-
-/* ------------------------------------------------------------------ monitor */
-
-async function pageMonitor() {
-  const out = await api('/cameras?pageSize=200&page=1');
-  const sorted = out.items.slice().sort((a, b) => b.runtime.readers - a.runtime.readers || a.slug.localeCompare(b.slug));
-  const o = state.overview || {};
-  $('#view').innerHTML = `
-    <div class="cards">
-      <div class="card"><h3>Readers</h3><div class="value" id="mon-readers">${fmt(state.stats?.readers || 0)}</div></div>
-      <div class="card"><h3>Egress</h3><div class="value" id="mon-out">${kbps(state.stats?.outKbps || 0)}</div></div>
-      <div class="card"><h3>Ready</h3><div class="value">${fmt(o.camerasReady || 0)}</div><div class="sub">tổng ${fmt(o.camerasTotal || 0)}</div></div>
-      <div class="card"><h3>Managed paths</h3><div class="value">${fmt(state.stats?.managedPaths || 0)}</div><div class="sub">adds ${state.stats?.adds || 0} · patches ${state.stats?.patches || 0} · deletes ${state.stats?.deletes || 0}</div></div>
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h2>Camera theo tải</h2><span class="spacer"></span><span class="muted small">tự cập nhật mỗi 2s</span></div>
-      <div class="tablewrap"><table><thead><tr><th>Slug</th><th>State</th><th class="num">Readers</th><th class="num">In</th><th class="num">Out</th><th>Lỗi</th></tr></thead><tbody>
-      ${sorted.slice(0, 60).map((c) => `<tr><td class="slug">${esc(c.slug)}</td>
-        <td><span class="state ${esc(c.runtime.state)}">${esc(c.runtime.state)}</span></td>
-        <td class="num">${c.runtime.readers}</td><td class="num">${kbps(c.runtime.inKbps)}</td><td class="num">${kbps(c.runtime.outKbps)}</td>
-        <td class="muted small">${esc(c.runtime.lastError || '')}</td></tr>`).join('')}
-      </tbody></table></div>
-    </div>`;
-  // refresh every 5s while on this page
-  state.timer = setInterval(() => {
-    if (state.page !== 'monitor') { clearInterval(state.timer); state.timer = null; return; }
-    pageMonitor().catch(() => {});
-  }, 5000);
-}
-
-/* ------------------------------------------------------------------ loadtest */
-
-async function pageLoadtest() {
-  $('#view').innerHTML = `
-    <div class="panel">
-      <div class="panel-head"><h2>Load test — mô phỏng N client RTSP</h2></div>
-      <div class="panel-body">
-        <form id="ltForm" class="formgrid">
-          <label>Số client<input name="count" type="number" value="100" min="1" max="2000" /></label>
-          <label>Concurrency<input name="concurrency" type="number" value="20" min="1" max="200" /></label>
-          <label>Timeout (ms)<input name="timeoutMs" type="number" value="8000" min="500" /></label>
-          <label class="row" style="align-items:flex-end"><button class="primary" data-act="lt-run">▶ Chạy</button></label>
-        </form>
-        <div class="hint">Mỗi client thực hiện RTSP DESCRIBE (qua auth thật) rồi đóng — đo khả năng đáp ứng hàng trăm kết nối. Client xoay vòng trên các camera đang bật.</div>
-      </div>
-    </div>
-    <div id="ltResult"></div>`;
-  $('#ltForm').querySelector('[data-act=lt-run]').addEventListener('click', async (e) => {
-    e.preventDefault();
-    const f = new FormData($('#ltForm'));
-    try {
-      const run = await api('/loadtest', {
-        method: 'POST',
-        body: { count: Number(f.get('count')), concurrency: Number(f.get('concurrency')), timeoutMs: Number(f.get('timeoutMs')) },
-      });
-      renderRun({ ...run, status: 'running' });
-      pollRun(run.id);
-    } catch (err) { toast(err.message, 'err'); }
-  });
-}
-
-function renderRun(r) {
-  const done = r.status === 'done';
-  const total = (r.ok || 0) + (r.fail || 0);
-  const pct = total ? Math.round((r.ok / total) * 100) : 0;
-  const errs = Object.entries(r.errors || {}).filter(([k]) => k && k !== 'ok').sort((a, b) => b[1] - a[1]).slice(0, 8);
-  $('#ltResult').innerHTML = `
-    <div class="panel">
-      <div class="panel-head"><h2>Kết quả ${done ? '' : '<span class="spinner"></span>'}</h2><span class="spacer"></span><span class="muted small">${esc(r.id)}</span></div>
-      <div class="panel-body" style="display:grid;gap:14px">
-        <div class="cards">
-          <div class="card"><h3>Thành công</h3><div class="value">${pct}%</div><div class="sub">${r.ok || 0}/${total} · fail ${r.fail || 0}</div></div>
-          <div class="card"><h3>Latency p50 / p95</h3><div class="value">${r.p50Ms || 0}<span class="muted" style="font-size:14px"> / ${r.p95Ms || 0} ms</span></div><div class="sub">max ${r.maxMs || 0} ms · avg ${r.avgMs || 0} ms</div></div>
-          <div class="card"><h3>Thời gian</h3><div class="value">${r.durationMs || 0}<span class="muted" style="font-size:14px"> ms</span></div><div class="sub">${r.count} client · conc ${r.concurrency}</div></div>
-        </div>
-        ${errs.length ? `<div><h3 class="muted small">Lỗi</h3><pre>${esc(errs.map(([k, v]) => v + '× ' + k).join('\n'))}</pre></div>` : ''}
-      </div>
-    </div>`;
-}
-
-async function pollRun(id) {
-  const tick = async () => {
-    try {
-      const run = await api('/loadtest/' + id);
-      renderRun(run);
-      if (run.status !== 'done') setTimeout(tick, 700);
-    } catch (err) { toast(err.message, 'err'); }
-  };
-  setTimeout(tick, 500);
 }
 
 /* ------------------------------------------------------------------ events/system */

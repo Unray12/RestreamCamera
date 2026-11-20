@@ -183,8 +183,8 @@ docker compose -f docker-compose.dev.yml up -d
    # HLS
    ffplay "http://<host>:8888/vcam-0001/index.m3u8"
    ```
-4. **Load test**: mô phỏng N client DESCRIBE đồng thời qua auth thật, xem p50/p95/fail theo từng lỗi.
-5. **Monitor**: readers, ingress/egress, trạng thái từng camera (SSE, cập nhật 2s).
+4. **Load test** có 2 chế độ: `describe` (N client DESCRIBE qua auth thật, p50/p95/fail) và `stream` (N client RTSP/TCP kéo media thật trong X giây, ramp-up được): đo thông lượng, bitrate mỗi client (kể cả 5% chậm nhất), TTFB, fps, mất gói, jitter, số lần đứng hình, độ trễ relay (từ RTCP SR), kèm kết luận Đạt/Cần chú ý/Không đạt, xuất JSON/CSV. Chọn camera mục tiêu theo tất cả / group / source / từng camera.
+5. **Dashboard (live)**: băng thông ra client / ingest từ source / NIC host theo thời gian thực (mẫu 1s, SSE), viewers theo giao thức, mất gói, độ trễ RTSP + Control API, CPU/RAM host; chọn tới 12 camera (hoặc “Top N tải cao”) để xem băng thông, viewers, mất gói từng camera, kèm bảng chất lượng (codec/độ phân giải, TB/viewer, đỉnh, session từng client). Khoảng xem 1m–24h; vùng cam trên biểu đồ là thời gian chạy load test.
 
 Trạng thái camera: `ready` (có media), `idle` (on-demand, chưa có client), `offline` (có client nhưng không có media), `disabled`, `error`.
 
@@ -202,8 +202,10 @@ POST   /api/v1/cameras/bulk-action     {ids,action: enable|disable|delete|rotate
 POST   /api/v1/cameras/{id}/actions/{enable|disable|restart|rotate-password}
 GET    /api/v1/cameras/{id}/preview    → rtsp/hls/whep URL kèm credential
 GET    /api/v1/cameras/export          CSV
-POST   /api/v1/loadtest                {count,concurrency,timeoutMs}
-GET    /api/v1/loadtest/{id}
+POST   /api/v1/loadtest                {mode: describe|stream, count, durationSec, rampSec, timeoutMs, cameraIds|sourceId|group}
+GET    /api/v1/loadtest | /loadtest/{id}      POST /api/v1/loadtest/{id}/stop
+GET    /api/v1/monitor/overview | /monitor/series?range=&cams=a,b|top:N
+GET    /api/v1/monitor/cameras?q=&sort=out|readers|loss|name   /monitor/cameras/{id}
 GET    /api/v1/monitor/stream          SSE
 POST   /api/v1/mediamtx/auth           (MediaMTX gọi, không cần token)
 GET    /healthz | /api/v1/metrics      (Prometheus text)
@@ -235,6 +237,7 @@ Biến môi trường chính (xem đầy đủ trong `backend/internal/config/co
 | `RC_ADMIN_USER` / `RC_ADMIN_PASSWORD` | `admin` / `admin` | Tài khoản UI (đổi trước khi mở mạng) |
 | `RC_MASTER_KEY` | tự sinh | 32 byte base64, dùng để giải mã secret |
 | `RC_RECONCILE_INTERVAL` | `5s` | Chu kỳ đồng bộ path |
+| `RC_TELEMETRY_INTERVAL` | `1s` | Chu kỳ lấy mẫu băng thông thời gian thực (giữ 15 phút ở 1s, 24h ở 30s, trong RAM) |
 | `RC_MAX_BULK_CAMERAS` | `500` | Giới hạn mỗi lần tạo hàng loạt |
 | `RC_IMAGE` | `restreamcamera-api` (build) / `unray/restreamcamera-api` (deploy) | Tên image, build ra hoặc pull về |
 | `RC_TAG` | `latest` | Tag image Docker (push chồng mỗi lần release, không theo version) |
@@ -250,6 +253,9 @@ docker run --rm -v "$PWD/backend:/src" -w /src golang:1.25-alpine sh -c "go vet 
 Test hiện có: crypto round-trip/tamper, auth callback (credential, allowlist, origin isolation, redirect), token, slug, reconciler với MediaMTX giả (add/patch/delete/idempotent/publisher/redirect).
 
 ## Giới hạn đã biết
+
+- Số đo NIC/CPU/RAM host chỉ có khi chạy trên Linux (đọc `/proc`; với `network_mode: host` là NIC thật). Lịch sử dashboard nằm trong RAM, mất khi restart control plane.
+- Load test `stream` chạy ngay trong control plane (cùng máy với MediaMTX): tốn CPU/NIC của máy đó, chỉ hỗ trợ RTSP over TCP. Mất gói đo trên TCP chỉ lộ ra khi server loại bỏ gói hoặc ngắt kết nối.
 
 - SQLite + single writer: phù hợp ~200 camera / 1 control plane. Trên 1000 camera nên chuyển Postgres (schema đã tách lớp store).
 - Không transcode: mọi camera ảo phát đúng codec/độ phân giải của source. Client không hỗ trợ codec đó sẽ không xem được.

@@ -566,6 +566,10 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.rec.Stats()
+	if s.tel != nil { // real-time numbers (1 s) beat the 5 s reconcile estimate
+		l := s.tel.Snapshot()
+		st.Readers, st.OutKbps, st.InKbps = l.Readers, int64(l.OutKbps), int64(l.InKbps)
+	}
 	ov.Readers = st.Readers
 	ov.InKbps = st.InKbps
 	ov.OutKbps = st.OutKbps

@@ -38,7 +38,8 @@ func Handler() http.Handler {
 			_, _ = w.Write(index)
 			return
 		}
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		// no-cache: assets are embedded in the binary and change on every release
+		w.Header().Set("Cache-Control", "no-cache")
 		r2 := new(http.Request)
 		*r2 = *r
 		r2.URL.Path = "/" + p
