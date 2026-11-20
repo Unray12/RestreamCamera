@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"strconv"
@@ -73,12 +74,7 @@ func DescribeWithAuth(ctx context.Context, rawURL, user, pass string, timeout ti
 	defer cancel()
 	start := time.Now()
 
-	resp, err := describeOnce(dctx, host, uri, "", 1, deadline)
-	if err == nil && resp.status == 401 && user != "" {
-		if auth := authorization(resp.challenges, user, pass, uri); auth != "" {
-			resp, err = describeOnce(dctx, host, uri, auth, 2, deadline)
-		}
-	}
+	resp, err := describeFlow(dctx, host, uri, user, pass, deadline)
 	out.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
 		out.Error = err.Error()
@@ -110,17 +106,53 @@ type describeReply struct {
 	challenges    []string // every WWW-Authenticate header value
 }
 
-// describeOnce sends one DESCRIBE on a fresh connection (a camera may close it after a 401).
-func describeOnce(ctx context.Context, host, uri, auth string, cseq int, deadline time.Time) (describeReply, error) {
-	var rep describeReply
+// session is one RTSP TCP connection. Cameras bind a Digest nonce to the connection that received it
+// (checked on a Hikvision-style camera: the answer sent on a NEW connection gets 401), so the
+// authenticated DESCRIBE must follow the challenge on the SAME connection.
+type session struct {
+	conn net.Conn
+	br   *bufio.Reader
+}
+
+func dialSession(ctx context.Context, host string, deadline time.Time) (*session, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", host)
 	if err != nil {
-		return rep, errors.New("dial: " + err.Error())
+		return nil, errors.New("dial: " + err.Error())
 	}
-	defer conn.Close()
 	_ = conn.SetDeadline(deadline)
+	return &session{conn: conn, br: bufio.NewReader(conn)}, nil
+}
 
+// describeFlow asks without credentials, then answers a 401 challenge on the same connection.
+// When the camera closed the connection after the 401, it answers on a fresh one (nonce not bound).
+func describeFlow(ctx context.Context, host, uri, user, pass string, deadline time.Time) (describeReply, error) {
+	ss, err := dialSession(ctx, host, deadline)
+	if err != nil {
+		return describeReply{}, err
+	}
+	defer func() { ss.conn.Close() }()
+	rep, err := ss.describe(uri, "", 1)
+	if err != nil || rep.status != 401 || user == "" {
+		return rep, err
+	}
+	auth := authorization(rep.challenges, user, pass, uri)
+	if auth == "" {
+		return rep, nil
+	}
+	if next, err := ss.describe(uri, auth, 2); err == nil {
+		return next, nil
+	}
+	ss.conn.Close()
+	if ss, err = dialSession(ctx, host, deadline); err != nil {
+		return rep, err
+	}
+	return ss.describe(uri, auth, 2)
+}
+
+// describe sends one DESCRIBE and reads the status line and headers (the body is skipped).
+func (ss *session) describe(uri, auth string, cseq int) (describeReply, error) {
+	var rep describeReply
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "DESCRIBE %s RTSP/1.0\r\n", uri)
 	fmt.Fprintf(&sb, "CSeq: %d\r\n", cseq)
@@ -130,12 +162,11 @@ func describeOnce(ctx context.Context, host, uri, auth string, cseq int, deadlin
 		sb.WriteString("Authorization: " + auth + "\r\n")
 	}
 	sb.WriteString("\r\n")
-	if _, err := conn.Write([]byte(sb.String())); err != nil {
+	if _, err := ss.conn.Write([]byte(sb.String())); err != nil {
 		return rep, errors.New("write: " + err.Error())
 	}
 
-	br := bufio.NewReader(conn)
-	statusLine, err := br.ReadString('\n')
+	statusLine, err := ss.br.ReadString('\n')
 	if err != nil {
 		return rep, errors.New("read: " + err.Error())
 	}
@@ -145,7 +176,7 @@ func describeOnce(ctx context.Context, host, uri, auth string, cseq int, deadlin
 	}
 	rep.status, _ = strconv.Atoi(parts[1])
 	for {
-		line, err := br.ReadString('\n')
+		line, err := ss.br.ReadString('\n')
 		if err != nil {
 			break
 		}
@@ -164,6 +195,10 @@ func describeOnce(ctx context.Context, host, uri, auth string, cseq int, deadlin
 				rep.challenges = append(rep.challenges, v)
 			}
 		}
+	}
+	if rep.status != 200 && rep.contentLength > 0 && rep.contentLength <= 64<<10 {
+		// drain the error body so the next request on this connection starts at a clean boundary
+		_, _ = io.CopyN(io.Discard, ss.br, int64(rep.contentLength))
 	}
 	return rep, nil
 }

@@ -6,7 +6,9 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"net"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -117,5 +119,64 @@ func TestUnsupportedDigestAlgorithmIsRefusedNotGuessed(t *testing.T) {
 	addr := fakeCamera(t, `Digest realm="cam", nonce="abc", algorithm=SHA-256`, digestVerifier("a", "b"))
 	if r := describe(addr, "a:b@"); r.OK || r.Status != 401 {
 		t.Fatalf("got %+v", r)
+	}
+}
+
+// fakeBoundCamera issues a nonce per CONNECTION and accepts an answer only on the connection that got it
+// (the real camera behaviour: an answer on a new connection is 401). It serves several requests per connection.
+func fakeBoundCamera(t *testing.T, user, pass string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var n atomic.Int64
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				nonce := md5hex("nonce-" + strconv.FormatInt(n.Add(1), 10))
+				verify := digestVerifier(user, pass)
+				br := bufio.NewReader(c)
+				for {
+					auth := ""
+					for {
+						line, err := br.ReadString('\n')
+						if err != nil {
+							return
+						}
+						line = strings.TrimRight(line, "\r\n")
+						if line == "" {
+							break
+						}
+						if strings.HasPrefix(strings.ToLower(line), "authorization:") {
+							auth = strings.TrimSpace(line[len("authorization:"):])
+						}
+					}
+					if auth != "" && strings.Contains(auth, `nonce="`+nonce+`"`) && verify(auth) {
+						_, _ = c.Write([]byte("RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 0\r\n\r\n"))
+						continue
+					}
+					_, _ = c.Write([]byte("RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm=\"cam\", nonce=\"" + nonce + "\"\r\n\r\n"))
+				}
+			}(c)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// The production bug: the answer went out on a new connection, so a camera that binds the nonce to the connection said 401 forever.
+func TestDigestAnswerStaysOnTheConnectionThatGotTheChallenge(t *testing.T) {
+	addr := fakeBoundCamera(t, "admin", "secret")
+	if r := describe(addr, "admin:secret@"); !r.OK {
+		t.Fatalf("connection-bound nonce: %+v", r)
+	}
+	if r := describe(addr, "admin:wrong@"); r.OK || r.Status != 401 {
+		t.Fatalf("wrong password must still fail: %+v", r)
 	}
 }
