@@ -6,7 +6,11 @@ package rtsp
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -31,6 +35,9 @@ func Describe(ctx context.Context, rawURL string, timeout time.Duration) Result 
 }
 
 // DescribeWithAuth performs a DESCRIBE using explicit credentials when given.
+// It first asks without credentials and answers the camera's own challenge
+// (Digest or Basic) on a 401, as a real player does: most IP cameras accept
+// Digest only, so sending Basic up front always ended in "unauthorized".
 func DescribeWithAuth(ctx context.Context, rawURL, user, pass string, timeout time.Duration) Result {
 	out := Result{}
 	u, err := url.Parse(rawURL)
@@ -59,52 +66,84 @@ func DescribeWithAuth(ctx context.Context, rawURL, user, pass string, timeout ti
 	requestURL := *u
 	requestURL.User = nil
 	requestURL.Fragment = ""
+	uri := requestURL.String()
 
 	deadline := time.Now().Add(timeout)
 	dctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-
-	var d net.Dialer
 	start := time.Now()
-	conn, err := d.DialContext(dctx, "tcp", host)
+
+	resp, err := describeOnce(dctx, host, uri, "", 1, deadline)
+	if err == nil && resp.status == 401 && user != "" {
+		if auth := authorization(resp.challenges, user, pass, uri); auth != "" {
+			resp, err = describeOnce(dctx, host, uri, auth, 2, deadline)
+		}
+	}
+	out.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
-		out.Error = "dial: " + err.Error()
-		out.LatencyMS = time.Since(start).Milliseconds()
+		out.Error = err.Error()
 		return out
+	}
+	out.Status, out.Server, out.SDPBytes = resp.status, resp.server, resp.contentLength
+	if out.Status == 200 {
+		out.OK = true
+		return out
+	}
+	switch out.Status {
+	case 401:
+		out.Error = "unauthorized (401)"
+		if user == "" {
+			out.Error = "unauthorized (401): the url has no credentials"
+		}
+	case 404:
+		out.Error = "path not found (404)"
+	default:
+		out.Error = fmt.Sprintf("rtsp status %d", out.Status)
+	}
+	return out
+}
+
+type describeReply struct {
+	status        int
+	server        string
+	contentLength int
+	challenges    []string // every WWW-Authenticate header value
+}
+
+// describeOnce sends one DESCRIBE on a fresh connection (a camera may close it after a 401).
+func describeOnce(ctx context.Context, host, uri, auth string, cseq int, deadline time.Time) (describeReply, error) {
+	var rep describeReply
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", host)
+	if err != nil {
+		return rep, errors.New("dial: " + err.Error())
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(deadline)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "DESCRIBE %s RTSP/1.0\r\n", requestURL.String())
-	sb.WriteString("CSeq: 1\r\n")
+	fmt.Fprintf(&sb, "DESCRIBE %s RTSP/1.0\r\n", uri)
+	fmt.Fprintf(&sb, "CSeq: %d\r\n", cseq)
 	sb.WriteString("Accept: application/sdp\r\n")
 	sb.WriteString("User-Agent: RestreamCamera/1.0\r\n")
-	if user != "" {
-		token := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
-		sb.WriteString("Authorization: Basic " + token + "\r\n")
+	if auth != "" {
+		sb.WriteString("Authorization: " + auth + "\r\n")
 	}
 	sb.WriteString("\r\n")
 	if _, err := conn.Write([]byte(sb.String())); err != nil {
-		out.Error = "write: " + err.Error()
-		return out
+		return rep, errors.New("write: " + err.Error())
 	}
 
 	br := bufio.NewReader(conn)
 	statusLine, err := br.ReadString('\n')
-	out.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
-		out.Error = "read: " + err.Error()
-		return out
+		return rep, errors.New("read: " + err.Error())
 	}
 	parts := strings.Fields(strings.TrimSpace(statusLine))
 	if len(parts) < 2 {
-		out.Error = "malformed status line"
-		return out
+		return rep, errors.New("malformed status line")
 	}
-	out.Status, _ = strconv.Atoi(parts[1])
-
-	contentLength := 0
+	rep.status, _ = strconv.Atoi(parts[1])
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
@@ -115,26 +154,99 @@ func DescribeWithAuth(ctx context.Context, rawURL, user, pass string, timeout ti
 			break
 		}
 		if k, v, ok := strings.Cut(line, ":"); ok {
+			v = strings.TrimSpace(v)
 			switch strings.ToLower(strings.TrimSpace(k)) {
 			case "content-length":
-				contentLength, _ = strconv.Atoi(strings.TrimSpace(v))
+				rep.contentLength, _ = strconv.Atoi(v)
 			case "server":
-				out.Server = strings.TrimSpace(v)
+				rep.server = v
+			case "www-authenticate":
+				rep.challenges = append(rep.challenges, v)
 			}
 		}
 	}
-	out.SDPBytes = contentLength
-	if out.Status == 200 {
-		out.OK = true
-		return out
+	return rep, nil
+}
+
+// authorization answers the first usable challenge: Digest (preferred) or Basic.
+func authorization(challenges []string, user, pass, uri string) string {
+	for _, c := range challenges {
+		if strings.HasPrefix(strings.ToLower(c), "digest ") {
+			if h := digestHeader(c[len("digest "):], user, pass, uri); h != "" {
+				return h
+			}
+		}
 	}
-	switch out.Status {
-	case 401:
-		out.Error = "unauthorized (401)"
-	case 404:
-		out.Error = "path not found (404)"
-	default:
-		out.Error = fmt.Sprintf("rtsp status %d", out.Status)
+	for _, c := range challenges {
+		if strings.HasPrefix(strings.ToLower(c), "basic") {
+			return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+		}
+	}
+	return ""
+}
+
+// digestHeader builds an RFC 2617 MD5 Digest answer (with or without qop=auth); "" when unsupported.
+func digestHeader(params, user, pass, uri string) string {
+	p := parseParams(params)
+	if alg := strings.ToUpper(p["algorithm"]); alg != "" && alg != "MD5" {
+		return ""
+	}
+	realm, nonce := p["realm"], p["nonce"]
+	if nonce == "" {
+		return ""
+	}
+	md5hex := func(s string) string { h := md5.Sum([]byte(s)); return hex.EncodeToString(h[:]) }
+	ha1 := md5hex(user + ":" + realm + ":" + pass)
+	ha2 := md5hex("DESCRIBE:" + uri)
+	var b strings.Builder
+	fmt.Fprintf(&b, `Digest username="%s", realm="%s", nonce="%s", uri="%s"`, user, realm, nonce, uri)
+	qop := ""
+	for _, q := range strings.Split(p["qop"], ",") {
+		if strings.TrimSpace(q) == "auth" {
+			qop = "auth"
+		}
+	}
+	if qop != "" {
+		raw := make([]byte, 8)
+		_, _ = rand.Read(raw)
+		cnonce, nc := hex.EncodeToString(raw), "00000001"
+		fmt.Fprintf(&b, `, response="%s", qop=auth, nc=%s, cnonce="%s"`, md5hex(ha1+":"+nonce+":"+nc+":"+cnonce+":auth:"+ha2), nc, cnonce)
+	} else {
+		fmt.Fprintf(&b, `, response="%s"`, md5hex(ha1+":"+nonce+":"+ha2))
+	}
+	if o := p["opaque"]; o != "" {
+		fmt.Fprintf(&b, `, opaque="%s"`, o)
+	}
+	return b.String()
+}
+
+// parseParams reads `k="v", k2=v2` pairs (values may be quoted and contain commas).
+func parseParams(s string) map[string]string {
+	out := map[string]string{}
+	for len(s) > 0 {
+		s = strings.TrimLeft(s, " ,")
+		eq := strings.IndexByte(s, '=')
+		if eq < 0 {
+			break
+		}
+		key := strings.ToLower(strings.TrimSpace(s[:eq]))
+		s = s[eq+1:]
+		var val string
+		if strings.HasPrefix(s, `"`) {
+			end := strings.IndexByte(s[1:], '"')
+			if end < 0 {
+				val, s = s[1:], ""
+			} else {
+				val, s = s[1:1+end], s[end+2:]
+			}
+		} else {
+			end := strings.IndexByte(s, ',')
+			if end < 0 {
+				end = len(s)
+			}
+			val, s = strings.TrimSpace(s[:end]), s[end:]
+		}
+		out[key] = val
 	}
 	return out
 }
